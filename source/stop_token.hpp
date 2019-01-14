@@ -126,25 +126,25 @@ struct __stop_state {
   bool __try_add_callback(
       __stop_callback_base* __cb,
       bool __incrementRefCountIfSuccessful) noexcept {
-    std::uint64_t __oldState;
-    goto load_state;
-    do {
-      goto check_state;
-      do {
+    std::uint64_t __oldState = __state_.load(std::memory_order_acquire);
+    while (true) {
+      if (__is_stop_requested(__oldState)) {
+        __cb->__execute();
+        return false;
+      }
+      else if (!__is_stop_requestable(__oldState)) {
+        return false;
+      }
+      else if (__is_locked(__oldState)) {
         __spin_yield();
-      load_state:
         __oldState = __state_.load(std::memory_order_acquire);
-      check_state:
-        if (__is_stop_requested(__oldState)) {
-          __cb->__execute();
-          return false;
-        } else if (!__is_stop_requestable(__oldState)) {
-          return false;
-        }
-      } while (__is_locked(__oldState));
-    } while (!__state_.compare_exchange_weak(
-        __oldState, __oldState | __locked_flag, std::memory_order_acquire));
-
+      }
+      else if (__state_.compare_exchange_weak(
+        __oldState, __oldState | __locked_flag, std::memory_order_acquire)) {
+        break;
+      }
+    }
+ 
     // Push callback onto callback list.
     __cb->__next_ = __head_;
     if (__cb->__next_ != nullptr) {
@@ -222,21 +222,22 @@ struct __stop_state {
 
   bool __try_lock_and_signal_until_signalled() noexcept {
     std::uint64_t __oldState = __state_.load(std::memory_order_acquire);
-    do {
-      if (__is_stop_requested(__oldState))
+    while (true) {
+      if (__is_stop_requested(__oldState)) {
         return false;
-      while (__is_locked(__oldState)) {
+      }
+      else if (__is_locked(__oldState)) {
         __spin_yield();
         __oldState = __state_.load(std::memory_order_acquire);
-        if (__is_stop_requested(__oldState))
-          return false;
       }
-    } while (!__state_.compare_exchange_weak(
-        __oldState,
-        __oldState | __stop_requested_flag | __locked_flag,
-        std::memory_order_acq_rel,
-        std::memory_order_acquire));
-    return true;
+      else if (__state_.compare_exchange_weak(
+          __oldState,
+          __oldState | __stop_requested_flag | __locked_flag,
+          std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+        return true;
+      }
+    }
   }
 
   void __lock() noexcept {
