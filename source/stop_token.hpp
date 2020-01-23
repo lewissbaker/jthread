@@ -158,22 +158,20 @@ struct __stop_state {
   bool __try_add_callback(
       __stop_callback_base* __cb,
       bool __incrementRefCountIfSuccessful) noexcept {
-    std::uint64_t __oldState;
-    goto load_state;
+    std::uint64_t __oldState = __state_.load(std::memory_order_acquire);
     do {
-      goto check_state;
-      do {
-        __spin_yield();
-      load_state:
-        __oldState = __state_.load(std::memory_order_acquire);
-      check_state:
+      while (true) {
         if (__is_stop_requested(__oldState)) {
           __cb->__execute();
           return false;
         } else if (!__is_stop_requestable(__oldState)) {
           return false;
+        } else if (!__is_locked(__oldState)) {
+          break;
         }
-      } while (__is_locked(__oldState));
+        __spin_yield();
+        __oldState = __state_.load(std::memory_order_acquire);
+      }
     } while (!__state_.compare_exchange_weak(
         __oldState, __oldState | __locked_flag, std::memory_order_acquire));
 
